@@ -3,7 +3,8 @@
 /*jshint supernew:true, laxcomma:true, undef:true */
 /*global
   window, XMLHttpRequest, console,
-  Uint8Array
+  Uint8Array, Float32Array,
+  _
 */
 
 /**
@@ -56,6 +57,18 @@ req.onload = function() {
 req.send();
 
 /**
+* Converts a frequency-domain index value into an actually frequency (Hz);
+* Gets declared dynamically, because it is sensitive to the analyzer-node.
+*
+* @see http://stackoverflow.com/questions/4364823/how-to-get-frequency-from-fft-result
+*
+* @type {Closure}
+* @param {int} The frequency-domain (zero-based) index.
+* @return The frequency in Hertz.
+*/
+var as_frequency = null;
+
+/**
 * @param {AudioBuffer} buf
 * @see https://developer.mozilla.org/en-US/docs/Web/API/AudioContext.createBuffer
 * @see https://developer.mozilla.org/en-US/docs/Web/API/AudioBuffer
@@ -65,48 +78,65 @@ function use_buffer( buf ) {
   src.buffer = buf;
 
   console.log( '..use_buffer.. audio-buffer:', buf );
-//  var pcm_data_channel_0 = buf.getChannelData( 0 );    // raw-data is slow!
+  var buffer_size = 4096
+    , pro  = ctx.createScriptProcessor( buffer_size )
+    , anna = ctx.createAnalyser()
+    ;
 
-  var buffer_size = 4096;
-  var pro = ctx.createScriptProcessor( buffer_size );
+  var fft_size    = anna.fftSize = 2048
+    , sample_rate = buf.sampleRate
+    ;
 
-  var anna = ctx.createAnalyser();
-  anna.fftSize = 2048;
-  var timeDomain = new Uint8Array( anna.frequencyBinCount );
-  //var freqDomain = new Float32Array( anna.frequencyBinCount );
+  //
+  // Declare last-minute closures.
+  //
 
-// works.
-//  src.connect( ctx.destination );
+  as_frequency = function( idx ) {
+        return idx * sample_rate / fft_size;
+      };
 
-// also works.
-//  src.connect( anna );
-//  anna.connect( ctx.destination );
+  /** Temporary data lists. */
+  var timeDomain = new Uint8Array(   anna.frequencyBinCount )
+    , freqDomain = new Float32Array( anna.frequencyBinCount )
+    ;
 
-// Gets the events, but audio is silent.
+  // FIXME: Gets the events, but audio is silent?
   src .connect( anna );
   anna.connect( pro );
   pro .connect( ctx.destination );
 
-  var zcr_samples = [];
+  /** A place to store results per sample/iteration. */
+  var samples =
+  { 'zcr':      []
+  , 'centroid': []
+  };
 
   pro.onaudioprocess = function( e ) {
-        //anna.getFloatFrequencyData( freqDomain );
+        anna.getFloatFrequencyData( freqDomain );
         anna.getByteTimeDomainData( timeDomain );
-        zcr_samples.push( get_zcr( timeDomain ) );
+        samples.zcr     .push( get_zcr(      timeDomain ) );
+        samples.centroid.push( get_centroid( freqDomain ) );
       };
 
-  src.onended = function() {
-        console.log( '..ended..' );
-        console.log( zcr_samples );
-      };
+  src.onended = _.once( function() {
+        console.log( 'onended' );
+        var avg =
+        { 'zcr':      mean( samples.zcr )
+        , 'centroid': mean( samples.centroid )
+        };
+        console.log( 'Resulting averages:', avg );
+      });
 
   //
   // Sample from the middle of the song.
   //
 
   var mid = buf.duration / 2;
-  var delta = 5;    // 5 seconds we're gonna listen to.
+  var delta = 3;    // Note: 2.2 seconds is the minimum sample-duration required for detecting 60+ bpm.
   src.start( 0, mid, delta );
+
+  // WORKAROUND: Sometimes the on-ended event doesn't fire.
+  setTimeout( src.onended, delta * 2 * 1000 );
 }
 
 /**
@@ -130,11 +160,39 @@ function get_zcr( timeDomain ) {
   while ( --i ) {
     if ( sign !== z3r0 < timeDomain[ i ] ) {
       zcr++;
-      debugger;
       sign = !sign;
     }
   }
   return zcr;
+}
+
+/**
+* The Centroid is a measure of spectral brightness;
+* Alludes to musical timbre.
+*
+* @param {Float32Array} freqDomain The sound represented by the frequency-domain post FFT.
+* @see http://en.wikipedia.org/wiki/Spectral_centroid
+* @see Tzanetakis.pdf
+*/
+function get_centroid( freqDomain ) {
+  // GOTCHA: Working indirectly via frequency-indices.
+  var combined_weighted_frequencies = _.reduce( freqDomain, function( sum, amp, idx ) {
+        return sum + amp * idx;
+      });
+  var combined_magnitude = _.reduce( freqDomain, function( sum, amp ) {
+        return sum + amp;
+      }); 
+  return as_frequency( combined_weighted_frequencies / combined_magnitude );
+}
+
+/**
+* Returns the average value for a given list of values.
+*/
+function mean( li ) {
+  var sum = _.reduce( li, function( sum, it ) {
+        return sum + ( it || 0 );
+      });
+  return sum / li.length;
 }
 
 //---
