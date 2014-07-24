@@ -110,6 +110,7 @@ function use_buffer( buf ) {
   { 'zcr':      []
   , 'centroid': []
   , 'rolloff':  []
+  , 'flux': get_flux_capacitor( anna.frequencyBinCount )
   };
 
   pro.onaudioprocess = function( e ) {
@@ -117,7 +118,8 @@ function use_buffer( buf ) {
         anna.getByteTimeDomainData( time_domain );
         samples.zcr     .push( get_zcr(      time_domain ) );
         samples.centroid.push( get_centroid( freq_domain ) );
-        samples.rolloff .push( get_rolloff(  freq_domain ) )
+        samples.rolloff .push( get_rolloff(  freq_domain ) );
+        record_flux( samples.flux, freq_domain );
       };
 
   src.onended = _.once( function() {
@@ -128,6 +130,7 @@ function use_buffer( buf ) {
         , 'rolloff':  mean( samples.rolloff )
         };
         console.log( 'Resulting averages:', avg );
+        console.log( 'flux:', samples.flux );
       });
 
   //
@@ -230,6 +233,42 @@ function get_rolloff( freq_domain ) {
       });
   return ( r )?
       as_frequency( r ) : null;
+}
+
+/**
+* @param {Number} n The bin-count.
+* @return {List<Object[]>} With size determined by frequency-bin count.
+*/
+function get_flux_capacitor( n ) {
+  var flux = [];
+  while ( n-- ) {
+    flux.push({ 'prev': null
+              , 'items': []
+              });
+  }
+  return flux;
+}
+
+/**
+* Record the inter-sample flux (by frequency).
+*
+* @param {List<Object[]>} flux organizing flux-records by frequency-bin (zero-based).
+* @return {void}
+*/
+function record_flux( flux, freq_domain ) {
+  _.each( freq_domain, function( amp, freq ) {
+        var it    = flux[ freq ]
+          , delta = ( it.prev )?
+                Math.abs( amp - it.prev ) : 0
+          ;
+        it.prev = amp;
+        it.items.push( delta );
+      });
+
+  // TODO
+  // Somewhere else, provide STD, and mean flux by frequency.
+  // Should be able to derive attack, sustain, decay, and release.
+  // Can find "active" frequency peaks.
 }
 
 //---
