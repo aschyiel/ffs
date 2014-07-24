@@ -1,11 +1,13 @@
 //..ffs.js, uly, july2014..
 
-/*jshint supernew:true, laxcomma:true, undef:true */
+/*jshint supernew:true, laxcomma:true, undef:true, expr:true */
 /*global
   window, XMLHttpRequest, console, setTimeout,
   Uint8Array, Float32Array,
-  _
+  _, goog
 */
+
+goog.require( 'goog.structs.PriorityQueue' );
 
 /**
 * In theory, we can measure musical genre via the following:
@@ -28,33 +30,26 @@
 * @see http://stackoverflow.com/questions/657073/how-to-detect-bpm-of-the-song-by-programming
 *      http://www.academia.edu/4631247/Waveform-Based_Musical_Genre_Classification
 */
-(function(){
+(function( exports ){
 //---
 
-var AudioContext = window.AudioContext || window.webkitAudioContext
-  , ctx = new AudioContext
-  , req = new XMLHttpRequest
-  , song_url = 'http://localhost:3000/assets/ghetto_love.mp3'
-  ;
+/** @constructor */
+function FFS()
+{
+  var AudioContext = window.AudioContext || window.webkitAudioContext;
 
-req.open( 'GET', song_url, true );
-req.responseType = 'arraybuffer';
-req.onload = function() {
-      console.log( '..onload..' );
-      ctx.decodeAudioData(
-          req.response,
-          function( buf ) {
-            if ( !buf ) {
-              throw new Error( "Missing audio-buffer --- perhaps the "+
-                               "audio-source is invalid? song-url:"+ song_url );
-            }
-            use_buffer( buf );
-          },
-          function( err ) {
-            console.log( "Error: AudioContext#decodeAudioData --- ", err );
-          });
-    };
-req.send();
+  //
+  // Properties.
+  //
+
+  this.ctx = new AudioContext;
+}
+var fn = FFS.prototype;
+exports.FFS = FFS;
+
+//
+// Module properties.
+//
 
 /**
 * Converts a frequency-domain index value into an actually frequency (Hz);
@@ -68,13 +63,65 @@ req.send();
 */
 var as_frequency = null;
 
+//
+// Public Methods
+//
+
 /**
+*
+* @public
+* @param {Map} p:
+*  - song_url {String}
+*  - onresults {Closure}
+*/
+fn.analyze = function( p ) {
+  var req  = new XMLHttpRequest
+    , that = this
+    ;
+  req.open( 'GET', p.song_url, true );
+  req.responseType = 'arraybuffer';
+  req.onload = function() {
+        that.ctx.decodeAudioData(
+            req.response,
+            function( buf ) {
+              if ( !buf ) {
+                throw new Error( "Missing audio-buffer --- perhaps the "+
+                                 "audio-source is invalid? song-url:"+ p.song_url );
+              }
+              use_buffer({ ffs: that
+                         , buf: buf
+                         , onresults: p.onresults
+                         , song_url: p.song_url
+                         });
+            },
+            function( err ) {
+              console.log( "Error: AudioContext#decodeAudioData --- ", err );
+            });
+      };
+  req.send();
+
+};
+
+//
+// Private Methods
+//
+
+/**
+* @param {FFS} ffs The instance.
 * @param {AudioBuffer} buf
+* @param {Closure} cb
 * @see https://developer.mozilla.org/en-US/docs/Web/API/AudioContext.createBuffer
 * @see https://developer.mozilla.org/en-US/docs/Web/API/AudioBuffer
 */
-function use_buffer( buf ) {
-  var src = ctx.createBufferSource();
+function use_buffer( p ) {
+  p = p || {};
+  var ffs      = p.ffs
+    , buf      = p.buf
+    , cb       = p.onresults
+    , song_url = p.song_url
+    , ctx = ffs.ctx
+    , src = ctx.createBufferSource()
+    ;
   src.buffer = buf;
 
   console.log( '..use_buffer.. audio-buffer:', buf );
@@ -124,13 +171,18 @@ function use_buffer( buf ) {
 
   src.onended = _.once( function() {
         console.log( 'onended' );
-        var avg =
-        { 'zcr':      mean( samples.zcr )
-        , 'centroid': mean( samples.centroid )
-        , 'rolloff':  mean( samples.rolloff )
+        var sample_size = samples.zcr.length;
+        var crunched_flux = calculate_flux( samples.flux );
+        var rez =
+        { 'average_zcr':      get_mean( samples.zcr )
+        , 'average_centroid': get_mean( samples.centroid )
+        , 'average_rolloff':  get_mean( samples.rolloff )
+        , 'song_url': song_url
+        , 'sample_size': sample_size
+        , 'top-10-flux-by-mean': get_top_flux( crunched_flux )
+        , 'top-10-flux-by-std':  get_top_flux( crunched_flux, 'std' )
         };
-        console.log( 'Resulting averages:', avg );
-        console.log( 'flux:', samples.flux );
+        cb && cb( rez );
       });
 
   //
@@ -194,7 +246,7 @@ function get_centroid( freq_domain ) {
 /**
 * Returns the average value for a given list of values.
 */
-function mean( li ) {
+function get_mean( li ) {
   var sum = _.reduce( li, function( sum, it ) {
         return sum + ( it || 0 );
       });
@@ -271,5 +323,53 @@ function record_flux( flux, freq_domain ) {
   // Can find "active" frequency peaks.
 }
 
+/**
+* @param {List<Object[]>}
+* @return {List<Object[]>} Results by freq-bin containing the standard-dev
+*   -iation, * and mean for each frequency.
+*/
+function calculate_flux( flux ) {
+  var results = [];
+  _.each( flux, function( xi, idx ) {
+        var mean     = get_mean( xi.items )
+          , variance = _.collect( xi.items, function( it ) {
+                  return ( it - mean ) * ( it - mean );
+                })
+          , sigma    = Math.sqrt( get_mean( variance ) )
+          ;
+        results.push(
+        { 'freq': as_frequency( idx )
+        , 'mean': mean
+        , 'std':  sigma
+        });
+      });
+  return results;
+}
+
+/**
+* Returns the top frequencies with the most active flux.
+*
+* @param {List<Object[]>} The mean/std calculated flux values.
+* @param {String} property The property name we're prioritizing on; Defaults to "mean".
+* @param {Number} n The number of items to include in the results; Defaults to 10.
+* @return {Number[]} The ordered-list of frequency values.
+*
+* @see http://google.github.io/closure-library/api/class_goog_structs_PriorityQueue.html
+*/
+function get_top_flux( flux, property, n ) {
+  property = property || 'mean';
+  n = n || 10;
+  var q = new goog.structs.PriorityQueue;
+  _.each( flux, function( it ) {
+        // GOTCHA: A smaller value means a higher prioirty.
+        q.enqueue( 1 / it[ property ], it );
+      });
+  var li = [];
+  while ( n-- ) {
+    li.push( q.dequeue() );
+  }
+  return _.collect( li, 'freq' );
+}
+
 //---
-})();
+})( window );
