@@ -2,7 +2,7 @@
 
 /*jshint supernew:true, laxcomma:true, undef:true */
 /*global
-  window, XMLHttpRequest, console,
+  window, XMLHttpRequest, console, setTimeout,
   Uint8Array, Float32Array,
   _
 */
@@ -96,8 +96,8 @@ function use_buffer( buf ) {
       };
 
   /** Temporary data lists. */
-  var timeDomain = new Uint8Array(   anna.frequencyBinCount )
-    , freqDomain = new Float32Array( anna.frequencyBinCount )
+  var time_domain = new Uint8Array(   anna.frequencyBinCount )
+    , freq_domain = new Float32Array( anna.frequencyBinCount )
     ;
 
   // FIXME: Gets the events, but audio is silent?
@@ -109,13 +109,15 @@ function use_buffer( buf ) {
   var samples =
   { 'zcr':      []
   , 'centroid': []
+  , 'rolloff':  []
   };
 
   pro.onaudioprocess = function( e ) {
-        anna.getFloatFrequencyData( freqDomain );
-        anna.getByteTimeDomainData( timeDomain );
-        samples.zcr     .push( get_zcr(      timeDomain ) );
-        samples.centroid.push( get_centroid( freqDomain ) );
+        anna.getFloatFrequencyData( freq_domain );
+        anna.getByteTimeDomainData( time_domain );
+        samples.zcr     .push( get_zcr(      time_domain ) );
+        samples.centroid.push( get_centroid( freq_domain ) );
+        samples.rolloff .push( get_rolloff(  freq_domain ) )
       };
 
   src.onended = _.once( function() {
@@ -123,6 +125,7 @@ function use_buffer( buf ) {
         var avg =
         { 'zcr':      mean( samples.zcr )
         , 'centroid': mean( samples.centroid )
+        , 'rolloff':  mean( samples.rolloff )
         };
         console.log( 'Resulting averages:', avg );
       });
@@ -142,23 +145,23 @@ function use_buffer( buf ) {
 /**
 * Determines the zero-crossing rate.
 *
-* @param {Uint8Array} timeDomain - more or less random numbers between 0 and 256 or so.
+* @param {Uint8Array} time_domain - more or less random numbers between 0 and 256 or so.
 * @return {Number}
 *
 * @see http://en.wikipedia.org/wiki/Zero-crossing_rate
 */
-function get_zcr( timeDomain ) {
-  if ( !timeDomain || !timeDomain.length ) {
+function get_zcr( time_domain ) {
+  if ( !time_domain || !time_domain.length ) {
     return 0;
   }
   var zcr  = 0
-    , i    = timeDomain.length
+    , i    = time_domain.length
     , max  = 256
     , z3r0 = max / 2
-    , sign = z3r0 < timeDomain[ i ]
+    , sign = z3r0 < time_domain[ i ]
     ;
   while ( --i ) {
-    if ( sign !== z3r0 < timeDomain[ i ] ) {
+    if ( sign !== z3r0 < time_domain[ i ] ) {
       zcr++;
       sign = !sign;
     }
@@ -170,16 +173,16 @@ function get_zcr( timeDomain ) {
 * The Centroid is a measure of spectral brightness;
 * Alludes to musical timbre.
 *
-* @param {Float32Array} freqDomain The sound represented by the frequency-domain post FFT.
+* @param {Float32Array} freq_domain The sound represented by the frequency-domain post FFT.
 * @see http://en.wikipedia.org/wiki/Spectral_centroid
 * @see Tzanetakis.pdf
 */
-function get_centroid( freqDomain ) {
+function get_centroid( freq_domain ) {
   // GOTCHA: Working indirectly via frequency-indices.
-  var combined_weighted_frequencies = _.reduce( freqDomain, function( sum, amp, idx ) {
+  var combined_weighted_frequencies = _.reduce( freq_domain, function( sum, amp, idx ) {
         return sum + amp * idx;
       });
-  var combined_magnitude = _.reduce( freqDomain, function( sum, amp ) {
+  var combined_magnitude = _.reduce( freq_domain, function( sum, amp ) {
         return sum + amp;
       }); 
   return as_frequency( combined_weighted_frequencies / combined_magnitude );
@@ -193,6 +196,40 @@ function mean( li ) {
         return sum + ( it || 0 );
       });
   return sum / li.length;
+}
+
+/**
+* An indication of the spectral shape; defined as follows:
+*   The R-value at which 85% of the frequencies
+*   have been integrated (zero-based frequency-bin).
+*
+* @return {Number} The frequency of said r-value.
+*/
+function get_rolloff( freq_domain ) {
+  var total_magnitude = _.reduce( freq_domain, function( sum, amp ) {
+        return sum + amp;
+      });
+  var target  = 0.85 * total_magnitude
+    , sum     = 0
+    , r       = null
+
+      /** Returns true if we've met our target. */
+    , has_found_it = ( target > 0 )?
+          function() {
+            return sum > target;
+          } : function () {
+            return sum < target;
+          }
+    ;
+  _.each( freq_domain, function( amp, idx ) {
+        sum += amp;
+        if ( has_found_it() ) {
+          r = idx;
+          return false;    // Break out of the for-each-loop.
+        }
+      });
+  return ( r )?
+      as_frequency( r ) : null;
 }
 
 //---
