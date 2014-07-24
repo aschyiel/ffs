@@ -174,14 +174,27 @@ function use_buffer( p ) {
         var sample_size = samples.zcr.length;
         var crunched_flux = calculate_flux( samples.flux );
         var rez =
-        { 'average_zcr':      get_mean( samples.zcr )
-        , 'average_centroid': get_mean( samples.centroid )
-        , 'average_rolloff':  get_mean( samples.rolloff )
-        , 'song_url': song_url
-        , 'sample_size': sample_size
-        , 'top-10-flux-by-mean': get_top_flux( crunched_flux )
-        , 'top-10-flux-by-std':  get_top_flux( crunched_flux, 'std' )
+        { 'average':
+          { 'zcr':      get_mean( samples.zcr )
+          , 'centroid': get_mean( samples.centroid )
+          , 'rolloff':  get_mean( samples.rolloff )
+          }
+        , 'std': {}
+        , 'flux':
+          { 'top-10-flux-by-mean': get_top_flux( crunched_flux )
+          , 'top-10-flux-by-std':  get_top_flux( crunched_flux, 'std' )
+          }
+        , 'info':
+          { 'song_url':    song_url
+          , 'sample_size': sample_size
+          , 'sample_rate': sample_rate
+          , 'buffer_size': buffer_size
+          , 'fft_size':    fft_size
+          }
         };
+        rez.std.zcr      = get_std( samples.zcr,      rez.average.zcr );
+        rez.std.centroid = get_std( samples.centroid, rez.average.centroid );
+        rez.std.rolloff  = get_std( samples.rolloff,  rez.average.rolloff );
         cb && cb( rez );
       });
 
@@ -251,6 +264,21 @@ function get_mean( li ) {
         return sum + ( it || 0 );
       });
   return sum / li.length;
+}
+
+/**
+* Returns the standard deviation (sigma) value for a given list of values.
+*
+* @param {Number[]} li
+* @param {Number} avg Optional, a minor optimization via passing forward
+*                 the precalculated average.
+*/
+function get_std( li, avg ) {
+  avg = avg || get_mean( li );
+  var variance = _.collect( li, function( it ) {
+        return ( it - avg ) * ( it - avg );
+      });
+  return Math.sqrt( get_mean( variance ) );
 }
 
 /**
@@ -331,11 +359,8 @@ function record_flux( flux, freq_domain ) {
 function calculate_flux( flux ) {
   var results = [];
   _.each( flux, function( xi, idx ) {
-        var mean     = get_mean( xi.items )
-          , variance = _.collect( xi.items, function( it ) {
-                  return ( it - mean ) * ( it - mean );
-                })
-          , sigma    = Math.sqrt( get_mean( variance ) )
+        var mean  = get_mean( xi.items )
+          , sigma = get_std( xi.items, mean )
           ;
         results.push(
         { 'freq': as_frequency( idx )
